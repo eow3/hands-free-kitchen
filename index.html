@@ -1,0 +1,95 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Hands-Free Kitchen</title>
+<style>
+body{margin:0;font-family:system-ui;background:#fff8f0;color:#333;display:grid;grid-template-columns:2fr 1fr;gap:16px;padding:16px;height:100vh;box-sizing:border-box}
+#player{width:100%;aspect-ratio:16/9;margin-top:8px}
+#side{display:flex;flex-direction:column;gap:12px}
+#cam{width:100%;transform:scaleX(-1);border-radius:12px}
+#gesture{font-size:24px;font-weight:700}
+#timer{font-size:48px;font-weight:800}
+.help{font-size:15px;line-height:1.7}
+#toast{position:fixed;top:24px;left:50%;transform:translateX(-50%);background:#333;color:#fff;padding:12px 24px;border-radius:999px;font-size:22px;opacity:0;transition:opacity .3s}
+</style></head><body>
+<div>
+  <input id="url" placeholder="Paste a YouTube cooking video URL" style="width:70%;padding:8px">
+  <button id="load">Load</button>
+  <div id="player"></div>
+</div>
+<div id="side">
+  <video id="cam" autoplay playsinline muted></video>
+  <div id="gesture">Starting camera...</div>
+  <div id="timer"></div>
+  <div class="help">✋ Open palm: play / pause<br>👍 Thumbs up: forward 10s<br>👎 Thumbs down: back 10s<br>✌️ Peace sign: 5 min timer<br>✊ Fist: stop timer</div>
+</div>
+<div id="toast"></div>
+<script src="https://www.youtube.com/iframe_api"></script>
+<script type="module">
+import {GestureRecognizer, FilesetResolver} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+const $ = id => document.getElementById(id);
+let player, timerId;
+
+function toast(msg){ $('toast').textContent = msg; $('toast').style.opacity = 1;
+  clearTimeout(toast.t); toast.t = setTimeout(() => $('toast').style.opacity = 0, 1200); }
+
+$('load').onclick = () => {
+  const m = $('url').value.match(/(?:v=|youtu\.be\/|shorts\/)([\w-]{11})/);
+  if (!m) return toast('Could not read that URL');
+  if (!(window.YT && YT.loaded)) return toast('YouTube still loading, try again');
+  if (player) player.loadVideoById(m[1]);
+  else player = new YT.Player('player', {videoId: m[1], playerVars: {playsinline: 1}});
+};
+
+function startTimer(sec){
+  clearInterval(timerId); let left = sec; toast('Timer started');
+  const show = () => $('timer').textContent = `${Math.floor(left/60)}:${String(left%60).padStart(2,'0')}`;
+  show();
+  timerId = setInterval(() => { left--; show();
+    if (left <= 0){ clearInterval(timerId); $('timer').textContent = 'Done!'; toast('⏰ Timer done!'); } }, 1000);
+}
+function stopTimer(){ clearInterval(timerId); $('timer').textContent = ''; toast('Timer stopped'); }
+
+function act(name){
+  if (name === 'Victory') return startTimer(300);
+  if (name === 'Closed_Fist') return stopTimer();
+  if (!player || !player.getPlayerState) return toast('Load a video first');
+  const t = player.getCurrentTime();
+  if (name === 'Open_Palm'){
+    const playing = player.getPlayerState() === 1;
+    playing ? player.pauseVideo() : player.playVideo();
+    toast(playing ? 'Paused' : 'Playing');
+  }
+  if (name === 'Thumb_Up'){ player.seekTo(t + 10, true); toast('+10s'); }
+  if (name === 'Thumb_Down'){ player.seekTo(Math.max(0, t - 10), true); toast('-10s'); }
+}
+
+const vision = await FilesetResolver.forVisionTasks(
+  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+const rec = await GestureRecognizer.createFromOptions(vision, {
+  baseOptions: {
+    modelAssetPath: "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task",
+    delegate: "GPU"
+  },
+  runningMode: "VIDEO", numHands: 1
+});
+
+const cam = $('cam');
+cam.srcObject = await navigator.mediaDevices.getUserMedia({video: true});
+await cam.play();
+
+// Gesture must be held ~8 frames to fire, then 1.5s cooldown (prevents accidental triggers)
+let last = '', count = 0, cooldownUntil = 0;
+function loop(){
+  const now = performance.now();
+  if (cam.readyState >= 2){
+    const g = rec.recognizeForVideo(cam, now).gestures[0]?.[0];
+    const name = (g && g.score > 0.6) ? g.categoryName : 'None';
+    $('gesture').textContent = name === 'None' ? 'Show a gesture' : name.replace('_', ' ');
+    count = (name === last) ? count + 1 : 0; last = name;
+    if (count === 8 && name !== 'None' && now > cooldownUntil){ act(name); cooldownUntil = now + 1500; }
+  }
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body></html>
